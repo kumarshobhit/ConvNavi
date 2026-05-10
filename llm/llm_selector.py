@@ -1,9 +1,4 @@
 import subprocess
-from llm.call_deepseek import call_deepseek
-from llm.call_openai import call_openai, call_openai_gpt5_models
-from llm.call_ollama import call_ollama
-from llm.call_gemini import call_gemini
-from llm.call_anthropic import call_anthropic
 import os
 from dotenv import load_dotenv
 import traceback
@@ -44,6 +39,8 @@ def pass_llm(prompt,
     try:
         if model in ("llama3","llama3.2", "mistral", "deepseek-v2",
                      "deepseek-r1", "qwen3:latest","qwen3:14b", "qwen"):
+            from llm.call_ollama import call_ollama
+
             response, input_tokens, output_tokens = call_ollama(
                 prompt=prompt,
                 max_tokens=max_tokens,
@@ -52,6 +49,8 @@ def pass_llm(prompt,
                 model=model
             )
         elif model in ("gpt-5", "gpt-5-chat","gpt-5-mini"):
+            from llm.call_openai import call_openai_gpt5_models
+
             response, input_tokens, output_tokens = call_openai_gpt5_models(
                 prompt=prompt,
                 max_completion_tokens=max_tokens,
@@ -60,6 +59,8 @@ def pass_llm(prompt,
                 model=model
             )
         elif model in ("gpt-4o", "gpt-35-turbo", "gpt-4", "gpt-4o-mini"):
+            from llm.call_openai import call_openai
+
             response, input_tokens, output_tokens = call_openai(
                 prompt=prompt,
                 max_tokens=max_tokens,
@@ -68,6 +69,8 @@ def pass_llm(prompt,
                 model=model
             )
         elif model in ("DeepSeek-V3-0324"):
+            from llm.call_deepseek import call_deepseek
+
             response, input_tokens, output_tokens = call_deepseek(
                   prompt = prompt,
                   max_tokens=max_tokens,
@@ -77,6 +80,8 @@ def pass_llm(prompt,
                   deployment_name=model)
         elif model in ("gemini-3-flash-preview", "gemini-3-pro-preview",
                        "gemini-2.5-pro", "gemini-2.5-flash"):
+            from llm.call_gemini import call_gemini
+
             response, input_tokens, output_tokens = call_gemini(
                 prompt=prompt,
                 max_tokens=max_tokens,
@@ -86,6 +91,8 @@ def pass_llm(prompt,
             )
         elif model in ("claude-35-sonnet", "claude-37-sonnet",
                        "claude-4-sonnet", "claude-3-haiku"):
+            from llm.call_anthropic import call_anthropic
+
             response, input_tokens, output_tokens = call_anthropic(
                 prompt=prompt,
                 max_tokens=max_tokens,

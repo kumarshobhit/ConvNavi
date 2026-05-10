@@ -2,6 +2,8 @@ data/*
 .env
 key.json
 venv/
+.conda-env/
+.conda-pkgs/
 # Ignore Python cache directories and files
 __pycache__/
 **/__pycache__/
