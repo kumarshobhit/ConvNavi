@@ -14,6 +14,7 @@ import threading
 from pathlib import Path
 from car.state import ENUM_MAP, POSSIBLE_CAR_VALUES
 from llm.llm_selector import pass_llm, get_total_tokens, get_total_costs, get_query_costs
+from memory.kv_store import retrieve_from_kv_store, save_to_kv_store
 import os
 from models import SessionManager, Turn, Context, POIPreferences
 from sentence_transformers import SentenceTransformer, util
@@ -43,6 +44,7 @@ top_k = int(os.environ.get("TOP_K", 3))
 NAV_MEMORY_MAX_ENTRIES = int(os.environ.get("NAV_MEMORY_MAX_ENTRIES", 1000))
 NAV_MEMORY_TOP_K = int(os.environ.get("NAV_MEMORY_TOP_K", 7))
 USE_MEMORY = os.environ.get("USE_MEMORY", "true").strip().lower() not in ("0", "false", "no", "off")
+USE_KV_STORE = os.environ.get("USE_KV_STORE", "true").strip().lower() not in ("0", "false", "no", "off")
 EPISODIC_MEMORY_BATCH_SIZE = int(os.environ.get("EPISODIC_MEMORY_BATCH_SIZE", int(os.environ.get("MAX_TURNS", 10))))
 EMBEDDING_DEVICE = os.environ.get("EMBEDDING_DEVICE", "auto").strip().lower()
 if EMBEDDING_DEVICE == "auto":
@@ -55,7 +57,7 @@ NAV_MEMORY_EMBEDDINGS_PATH = Path(__file__).resolve().parent / "data" / "navigat
 NAV_MEMORY_FAISS_PATH = Path(__file__).resolve().parent / "data" / "navigation_memory.faiss"
 NAV_MEMORY_LOCK = threading.Lock()
 
-print(f"episodic memory config - USE_MEMORY: {USE_MEMORY}, BATCH_SIZE: {EPISODIC_MEMORY_BATCH_SIZE}, EMBEDDING_DEVICE: {EMBEDDING_DEVICE}")
+print(f"episodic memory config - USE_MEMORY: {USE_MEMORY}, USE_KV_STORE: {USE_KV_STORE}, BATCH_SIZE: {EPISODIC_MEMORY_BATCH_SIZE}, EMBEDDING_DEVICE: {EMBEDDING_DEVICE}")
 
 # Load embedding model once
 model = SentenceTransformer('all-MiniLM-L6-v2', device=EMBEDDING_DEVICE)
@@ -303,6 +305,24 @@ def append_navigation_memory_episode_async(summary: str, conversation_id: str, l
     worker.start()
 
 
+def save_to_kv_store_async(user_id, history: str, session_id, llm_model: str = ""):
+    """Update structured KV memory asynchronously."""
+    if not USE_KV_STORE or not history or history == "[]":
+        return
+
+    worker = threading.Thread(
+        target=save_to_kv_store,
+        kwargs={
+            "user_id": user_id,
+            "conversation_turn": history,
+            "session_id": str(session_id),
+            "llm_model": llm_model,
+        },
+        daemon=True,
+    )
+    worker.start()
+
+
 def append_navigation_memory(utterance: str, conversation_id: str, llm_model: str = "", memory_path: Path = NAV_MEMORY_PATH):
     """Deprecated: Use append_navigation_memory_episode instead. Kept for backward compatibility."""
     if not USE_MEMORY:
@@ -403,9 +423,62 @@ def retrieve_navigation_memory(query: str, constraints: Dict[str, Any], missing_
     return retrieved
 
 
+def _normalize_price_preference(value: str):
+    normalized = str(value or "").strip().lower()
+    if normalized in ("$", "$$", "$$$", "$$$$"):
+        return normalized
+    if normalized in ("cheap", "budget", "low", "inexpensive", "affordable"):
+        return "$"
+    if normalized in ("moderate", "medium"):
+        return "$$"
+    if normalized in ("expensive", "high", "upscale", "fancy"):
+        return "$$$"
+    return value
+
+
+def apply_kv_entries_to_constraints(constraints: Dict[str, Any], kv_entries: List[Dict[str, str]]):
+    updated = dict(constraints)
+    key_to_field = {
+        "user_cuisine_preference": "cuisine",
+        "user_price_preference": "price_level",
+        "user_parking_preference": "parking",
+        "user_noise_level_preference": "noise_level",
+        "user_good_for_kids_preference": "good_for_kids",
+        "user_dietary_restriction": "cuisine",
+    }
+
+    for entry in kv_entries or []:
+        key = str(entry.get("key", "")).strip().lower()
+        value = entry.get("value")
+        field = key_to_field.get(key)
+        if not field or value in (None, ""):
+            continue
+        if updated.get(field) is not None:
+            continue
+        if field == "price_level":
+            value = _normalize_price_preference(value)
+        updated[field] = value
+        print(f"[DEBUG] Filled '{field}' from KV memory: {value}")
+
+    if updated.get("category") is None and updated.get("cuisine") is not None:
+        updated["category"] = "Restaurants"
+        print("[DEBUG] Filled 'category' from KV cuisine memory: Restaurants")
+
+    return updated
+
+
 def fill_missing_constraints_with_memory(query: str, history: str, constraints: Dict[str, Any], context: Context,
-                                        llm_model: str = "", skip_fields: List[str] = None):
+                                        llm_model: str = "", skip_fields: List[str] = None, user_id=1):
     canonical_fields = POI_CONSTRAINT_FIELDS
+
+    kv_memory = {"entries": [], "context": "", "episodic_memory": None, "tokens_input": 0, "tokens_output": 0}
+    if USE_KV_STORE:
+        try:
+            kv_memory = retrieve_from_kv_store(user_id, query, llm_model=llm_model)
+            print("[DEBUG] KV memory retrieved:", kv_memory)
+            constraints = apply_kv_entries_to_constraints(constraints, kv_memory.get("entries", []))
+        except Exception:
+            traceback.print_exc()
 
     constraint_snapshot = {field: constraints.get(field) if field in constraints else None for field in canonical_fields}
 
@@ -448,19 +521,29 @@ def fill_missing_constraints_with_memory(query: str, history: str, constraints: 
     retrieved_memory = []
     if USE_MEMORY:
         retrieved_memory = retrieve_navigation_memory(query, constraint_snapshot, missing_fields=remaining_missing_fields)
-        if not retrieved_memory:
+        if not retrieved_memory and not kv_memory.get("context"):
             return updated_constraints, 0, 0
 
     print("retrieved_memory:", retrieved_memory)
+    print("kv_memory_context:", kv_memory.get("context", ""))
+
+    combined_memory = {
+        "kv_memory_context": kv_memory.get("context", ""),
+        "kv_entries": kv_memory.get("entries", []),
+        "episodic_memory": kv_memory.get("episodic_memory"),
+        "rag_memories": retrieved_memory,
+    }
 
     prompt = PROMPT_FILL_MISSING_CONSTRAINTS.format(
         history=history,
         query=query,
         constraints=json.dumps(sanitize_for_json(constraint_snapshot), ensure_ascii=False, indent=2),
         missing_fields=json.dumps(remaining_missing_fields, ensure_ascii=False, indent=2),
-        memory=json.dumps(sanitize_for_json(retrieved_memory), ensure_ascii=False, indent=2),
+        memory=json.dumps(sanitize_for_json(combined_memory), ensure_ascii=False, indent=2),
     )
     response, tokens_input, tokens_output = pass_llm(prompt=prompt, model=llm_model)
+    tokens_input += kv_memory.get("tokens_input", 0)
+    tokens_output += kv_memory.get("tokens_output", 0)
     print("[DEBUG] LLM response for filling missing constraints:", response)
     try:
         parsed = extract_json(repair_json(response))
@@ -743,6 +826,7 @@ def _handle_poi_stop(query, session, user_id,
     episodic_summary = generate_episodic_summary(history, llm_model=llm_model)
     if episodic_summary:
         append_navigation_memory_episode_async(episodic_summary, conversation_id=session.id, llm_model=llm_model)
+    save_to_kv_store_async(user_id, history, session.id, llm_model=llm_model)
 
     _finalize_turn(session, query, response, pois_output)
 
@@ -840,6 +924,7 @@ def _handle_poi_confirm(query, session, user_id,
     episodic_summary = generate_episodic_summary(history, llm_model=llm_model)
     if episodic_summary:
         append_navigation_memory_episode_async(episodic_summary, conversation_id=session.id, llm_model=llm_model)
+    save_to_kv_store_async(user_id, history, session.id, llm_model=llm_model)
 
     return _build_return_dict(
         response, pois_output, session, user_id,
@@ -923,6 +1008,7 @@ def _handle_poi_refine(query, session, user_location, embeddings, df,
         constraints=session.poi_constraints,
         context=session.user_context,
         llm_model=llm_model,
+        user_id=user_id,
     )
     tokens_query_input += input_tokens
     tokens_query_output += output_tokens
@@ -988,6 +1074,7 @@ def run_rag_navigation(
             if episodic_summary:
                 append_navigation_memory_episode_async(episodic_summary, conversation_id=session.id, llm_model=llm_model)
                 print(f"[INFO] Max turns reached. Episodic memory stored for session {session.id}")
+            save_to_kv_store_async(user_id, history, session.id, llm_model=llm_model)
         elif session is not None and session.ended_by_user:
             print(f"[INFO] Session {session.id} ended by user. Creating a new session.")
     

@@ -172,7 +172,8 @@ Constraints extracted from the current query or conversation state:
 Missing fields that may still need to be inferred:
 {missing_fields}
 
-Relevant navigation memories retrieved by embedding similarity:
+Relevant navigation memory. This may include structured key-value user preferences,
+recent episodic memory, and embedding-retrieved RAG summaries:
 {memory}
 
 Rules:
@@ -180,6 +181,9 @@ Rules:
 - Do not change any constraint that already has a non-null value.
 - Do not invent values that are not supported.
 - If the memory is not relevant, leave the field null.
+- If structured key-value memory says cuisine or price preference, use it for matching restaurant requests.
+- If memory or query says "restaurant" and cuisine is filled, set category to "Restaurants" unless the query asks for a non-restaurant place.
+- For "like last time", "same as before", "that place", or similar coreference, use the recent episodic memory when present.
 - Return ONLY valid JSON using the same schema as the constraints object.
 - Not every field has be filled. Carefully check which fields make sense to be filled based on the query.
 
@@ -195,8 +199,67 @@ Return schema:
     "has_outdoor_seating": true/false/null,
     "noise_level": string or null,
     "good_for_kids": true/false/null,
+
     "name": string or null
 }}
+"""
+
+PROMPT_KV_MEMORY_CONSTRUCT = """
+You maintain a key-value memory store of user navigation and in-car preferences from conversations.
+
+Critical constraints:
+1. ONLY store vehicle/navigation preferences and directly relevant context.
+2. Use concise values under 50 characters.
+3. Use descriptive keys following User_category_attribute, for example:
+   User_cuisine_preference, User_price_preference, User_route_avoid,
+   User_home_address, User_dietary_restriction, User_noise_level_preference,
+   User_good_for_kids_preference, User_parking_preference.
+
+Available tools are represented as JSON objects:
+- {{"tool": "memory_search", "arguments": {{"key": "User_cuisine_preference"}}}}
+- {{"tool": "memory_add", "arguments": {{"key": "User_cuisine_preference", "value": "Italian", "condition": ""}}}}
+- {{"tool": "memory_remove", "arguments": {{"key": "User_cuisine_preference"}}}}
+
+Must capture:
+- POI, route, destination, parking, price, cuisine, dietary, family/kids, ambience, accessibility, and in-car setting preferences.
+- Conditional preferences using the condition field, e.g. condition "with_family" or "rush_hour".
+- User-specific conflicts and corrections to previous preferences.
+
+Do not capture:
+- General life events, hobbies, work details, personal relationships, small talk, or one-off facts with no future navigation/vehicle relevance.
+
+Rules:
+- If adding or updating a key, call memory_search for that key before memory_add.
+- If the user explicitly corrects, cancels, or rejects a preference, call memory_remove.
+- If no relevant information is mentioned today, return [].
+- Return ONLY a valid JSON list of tool calls. No markdown or explanation.
+
+Current memory keys:
+{current_keys}
+
+Today's conversation:
+{conversation_turn}
+"""
+
+PROMPT_KV_MEMORY_RETRIEVE = """
+You select relevant key-value navigation memories for the current query.
+
+Current user query:
+{query}
+
+Stored memories for this user:
+{memories}
+
+Available retrieval tool:
+- {{"tool": "memory_search", "arguments": {{"key": "User_cuisine_preference"}}}}
+
+Rules:
+- Select only memories that can help fill POI/navigation constraints for this query.
+- Include route, destination, cuisine, price, dietary, parking, kids/family, ambience, accessibility, and address preferences when relevant.
+- Do not select unrelated memories.
+- Conditional memories are allowed here; the application filters them against the query condition.
+- Return [] if no stored memory is relevant.
+- Return ONLY a valid JSON list of memory_search tool calls.
 """
 
 PROMPT_GENERATE_RECOMMENDATION="""User query: "{}"
