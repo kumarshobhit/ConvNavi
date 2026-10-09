@@ -6,7 +6,7 @@ from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Depends
 from pydantic import BaseModel, Field
 import json
 from car.state import ENUM_MAP, CarState
-from main import get_embeddings_and_df, run_rag_navigation
+from main import get_embeddings_and_df, run_rag_navigation, replace_navigation_memory
 from models import Session, SessionManager
 from utils.check import check_if_poi_exists
 from utils.format import sanitize_for_json
@@ -68,6 +68,14 @@ class POIExistsResponse(BaseModel):
 class InitialCarStateRequest(BaseModel):
     user_id: Optional[int] = 1
     car_state: Dict[str, Dict[str, Any]]  # mirrors CarState.state
+
+class MemoryRow(BaseModel):
+    time: str
+    conversation_id: str
+    summary: str
+
+class ReplaceMemoryRequest(BaseModel):
+    rows: List[MemoryRow]
     
 def stt(audio_bytes: bytes, filename: str) -> str:
     client = AzureOpenAI(
@@ -138,6 +146,15 @@ def query_handler(request: QueryRequest):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
     
+@app.put("/memory")
+def replace_memory(request: ReplaceMemoryRequest):
+    try:
+        count = replace_navigation_memory([row.model_dump() for row in request.rows])
+        return {"success": True, "rows": count}
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/poi_exists", response_model=POIExistsResponse)
 def poi_exists(constraints: POIQueryRequest):
     try:

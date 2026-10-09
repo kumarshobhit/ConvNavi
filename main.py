@@ -50,9 +50,11 @@ if EMBEDDING_DEVICE == "auto":
 elif EMBEDDING_DEVICE == "cuda" and not torch.cuda.is_available():
     print("[WARN] EMBEDDING_DEVICE=cuda requested but CUDA is unavailable. Falling back to cpu.")
     EMBEDDING_DEVICE = "cpu"
-NAV_MEMORY_PATH = Path(__file__).resolve().parent / "data" / "navigation_memory.csv"
-NAV_MEMORY_EMBEDDINGS_PATH = Path(__file__).resolve().parent / "data" / "navigation_memory_embeddings.npy"
-NAV_MEMORY_FAISS_PATH = Path(__file__).resolve().parent / "data" / "navigation_memory.faiss"
+# Each instance owns its memory dir so several instances can run in parallel.
+NAV_MEMORY_DIR = Path(os.environ.get("NAV_MEMORY_DIR") or Path(__file__).resolve().parent / "data").resolve()
+NAV_MEMORY_PATH = NAV_MEMORY_DIR / "navigation_memory.csv"
+NAV_MEMORY_EMBEDDINGS_PATH = NAV_MEMORY_DIR / "navigation_memory_embeddings.npy"
+NAV_MEMORY_FAISS_PATH = NAV_MEMORY_DIR / "navigation_memory.faiss"
 NAV_MEMORY_LOCK = threading.Lock()
 
 print(f"episodic memory config - USE_MEMORY: {USE_MEMORY}, BATCH_SIZE: {EPISODIC_MEMORY_BATCH_SIZE}, EMBEDDING_DEVICE: {EMBEDDING_DEVICE}")
@@ -285,6 +287,31 @@ def append_navigation_memory_episode(summary: str, conversation_id: str, memory_
         faiss.write_index(index, str(NAV_MEMORY_FAISS_PATH))
         
         # print(f"[INFO] Episodic memory stored for conversation {conversation_id}: {summary[:50]}...")
+
+
+def replace_navigation_memory(rows: List[Dict[str, Any]], memory_path: Path = NAV_MEMORY_PATH) -> int:
+    """Replace the whole episodic memory and rebuild its embeddings and FAISS index."""
+    memory_df = pd.DataFrame(rows, columns=["time", "conversation_id", "summary"]).fillna("")
+
+    with NAV_MEMORY_LOCK:
+        memory_path.parent.mkdir(parents=True, exist_ok=True)
+        memory_df.to_csv(memory_path, index=False)
+
+        if memory_df.empty:
+            NAV_MEMORY_EMBEDDINGS_PATH.unlink(missing_ok=True)
+            NAV_MEMORY_FAISS_PATH.unlink(missing_ok=True)
+            return 0
+
+        embeddings = np.asarray(
+            embed_texts(memory_df["summary"].astype(str).tolist()).cpu().numpy(), dtype=np.float32
+        )
+        normalized_embeddings = embeddings.copy()
+        faiss.normalize_L2(normalized_embeddings)
+        index = faiss.IndexFlatIP(normalized_embeddings.shape[1])
+        index.add(normalized_embeddings)
+        np.save(NAV_MEMORY_EMBEDDINGS_PATH, embeddings)
+        faiss.write_index(index, str(NAV_MEMORY_FAISS_PATH))
+    return len(memory_df)
 
 
 def append_navigation_memory_episode_async(summary: str, conversation_id: str, llm_model: str = ""):
