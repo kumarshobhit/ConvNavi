@@ -1,21 +1,42 @@
 from openai import AzureOpenAI
+from azure.identity import AzureCliCredential, get_bearer_token_provider
 import os
 from dotenv import load_dotenv
 
 # Load variables from .env
 load_dotenv()
 
-azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
-api_version = os.getenv("AZURE_OPENAI_API_VERSION")
+azure_endpoint = os.getenv("AZURE_ENDPOINT") or os.getenv("AZURE_OPENAI_ENDPOINT")
+api_version = os.getenv("AZURE_API_VERSION") or os.getenv("AZURE_OPENAI_API_VERSION")
 api_key = os.getenv("AZURE_OPENAI_API_KEY")
 deployment_name = os.getenv("AZURE_OPENAI_DEPLOYMENT")
+auth_mode = os.getenv("AZURE_AUTH_MODE", "api_key").lower()
 
-# Initialize Azure OpenAI client
-client = AzureOpenAI(
-    api_key=api_key,
-    api_version=api_version,
-    azure_endpoint=azure_endpoint
-)
+
+def create_client():
+    client_config = {
+        "api_version": api_version,
+        "azure_endpoint": azure_endpoint,
+    }
+    if auth_mode == "azure_cli":
+        client_config["azure_ad_token_provider"] = get_bearer_token_provider(
+            AzureCliCredential(),
+            "https://cognitiveservices.azure.com/.default",
+        )
+    else:
+        client_config["api_key"] = api_key
+    return AzureOpenAI(**client_config)
+
+
+client = create_client()
+
+
+def build_messages(prompt, system_prompt):
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": prompt})
+    return messages
 
 
 def call_openai(prompt, 
@@ -27,10 +48,7 @@ def call_openai(prompt,
         model=model,
         temperature=temperature,
         max_tokens=max_tokens,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt}
-        ]
+        messages=build_messages(prompt, system_prompt),
     )
     input_tokens = response.usage.prompt_tokens
     output_tokens = response.usage.completion_tokens
@@ -50,20 +68,14 @@ def call_openai_gpt5_models(prompt,
         response = client.chat.completions.create(
                 model=model,
                 max_completion_tokens=max_completion_tokens,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": prompt}
-                ]
+                messages=build_messages(prompt, system_prompt),
             )
     else:
         response = client.chat.completions.create(
             model=model,
             reasoning_effort=reasoning_effort,
             max_completion_tokens=max_completion_tokens,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt}
-            ]
+            messages=build_messages(prompt, system_prompt),
         )
     input_tokens = response.usage.prompt_tokens
     output_tokens = response.usage.completion_tokens

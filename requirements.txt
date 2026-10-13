@@ -1,13 +1,16 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
+
 pandas 
 faiss-cpu 
 sentence-transformers 
+torch==2.14.1+cpu
 openai 
+azure-identity
 geopy 
 python-dateutil
 
 fastapi 
 uvicorn 
 python-dotenv 
-ollama
 json_repair
 python-multipart
