@@ -151,3 +151,48 @@ def test_coreference_includes_latest_episodic_memory(monkeypatch, tmp_path):
 
     assert result["episodic_memory"]["summary"] == "Went to Barbuzzo."
     assert "Went to Barbuzzo." in result["context"]
+
+
+def test_kv_only_coreference_excludes_episodic_memory(monkeypatch, tmp_path):
+    memory_path = tmp_path / "kv_memory.csv"
+    episodic_path = tmp_path / "navigation_memory.csv"
+    pd.DataFrame(
+        [{"time": "2026-01-02T00:00:00Z", "conversation_id": "old", "summary": "Old destination."}]
+    ).to_csv(episodic_path, index=False)
+
+    monkeypatch.setattr("llm.llm_selector.pass_llm", lambda **kwargs: ("[]", 3, 2))
+
+    result = kv_store.retrieve_from_kv_store(
+        1,
+        "Find another one like last time",
+        memory_path=memory_path,
+        episodic_memory_path=episodic_path,
+        include_episodic_memory=False,
+    )
+
+    assert result["episodic_memory"] is None
+    assert "Old destination." not in result["context"]
+
+
+def test_replace_kv_memory_converts_rag_rows(monkeypatch, tmp_path):
+    memory_path = tmp_path / "kv_memory.csv"
+    kv_store.memory_add(1, "User_cuisine_preference", "Italian", memory_path=memory_path)
+
+    monkeypatch.setattr(
+        "llm.llm_selector.pass_llm",
+        lambda **kwargs: (
+            '[{"tool": "memory_add", "arguments": {"key": "User_price_preference", "value": "cheap"}}]',
+            4,
+            2,
+        ),
+    )
+
+    result = kv_store.replace_kv_memory(
+        1,
+        [{"time": "2026-01-01T00:00:00Z", "conversation_id": "seed", "summary": "Driver prefers cheap food."}],
+        memory_path=memory_path,
+    )
+
+    assert kv_store.memory_search(1, "User_cuisine_preference", memory_path=memory_path) == []
+    assert kv_store.memory_search(1, "User_price_preference", memory_path=memory_path)[0]["value"] == "cheap"
+    assert result["executed"][0]["row"]["session_id"] == "seed"

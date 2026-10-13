@@ -282,6 +282,36 @@ def save_to_kv_store(
     }
 
 
+def replace_kv_memory(
+    user_id: Any,
+    rows: List[Dict[str, Any]],
+    llm_model: str = "",
+    memory_path: Path = KV_MEMORY_PATH,
+) -> Dict[str, Any]:
+    """Replace one user's KV entries from RAG-style episodic-memory rows."""
+    with KV_MEMORY_LOCK:
+        memory_df = _load_kv_memory(memory_path)
+        remaining = memory_df[memory_df["user_id"] != _normalize_user_id(user_id)].copy()
+        _save_kv_memory(remaining, memory_path)
+
+    history = "\n".join(
+        f"[{row.get('time', '')}] {row.get('summary', '')}"
+        for row in rows
+        if str(row.get("summary", "")).strip()
+    )
+    if not history:
+        return {"executed": [], "raw_response": "", "tokens_input": 0, "tokens_output": 0}
+
+    session_id = str(rows[-1].get("conversation_id", "injected")) if rows else "injected"
+    return save_to_kv_store(
+        user_id,
+        history,
+        session_id=session_id,
+        llm_model=llm_model,
+        memory_path=memory_path,
+    )
+
+
 def _condition_matches(query: str, condition: str) -> bool:
     condition = _normalize_text(condition).lower()
     if not condition:
@@ -341,6 +371,7 @@ def retrieve_from_kv_store(
     llm_model: str = "",
     memory_path: Path = KV_MEMORY_PATH,
     episodic_memory_path: Path = EPISODIC_MEMORY_PATH,
+    include_episodic_memory: bool = True,
 ) -> Dict[str, Any]:
     from llm.llm_selector import pass_llm
 
@@ -371,7 +402,11 @@ def retrieve_from_kv_store(
             selected.append(entry)
             seen.add(entry_id)
 
-    episodic_memory = _latest_episodic_memory(episodic_memory_path) if query_has_coreference(query) else None
+    episodic_memory = (
+        _latest_episodic_memory(episodic_memory_path)
+        if include_episodic_memory and query_has_coreference(query)
+        else None
+    )
     return {
         "entries": selected,
         "context": format_kv_context(selected, episodic_memory=episodic_memory),

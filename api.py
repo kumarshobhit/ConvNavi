@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 import json
 from car.state import ENUM_MAP, CarState
 from main import get_embeddings_and_df, run_rag_navigation
+from memory.kv_store import replace_kv_memory
 from models import Session, SessionManager
 from utils.check import check_if_poi_exists
 from utils.format import sanitize_for_json
@@ -64,6 +65,15 @@ class POIQueryRequest(BaseModel):
 class POIExistsResponse(BaseModel):
     exists: bool
     matching_pois: List[Dict[str, Any]]
+
+class MemoryRow(BaseModel):
+    time: str
+    conversation_id: str
+    summary: str
+
+class ReplaceMemoryRequest(BaseModel):
+    rows: List[MemoryRow]
+    user_id: Optional[int] = 1
 
 class InitialCarStateRequest(BaseModel):
     user_id: Optional[int] = 1
@@ -152,6 +162,19 @@ def poi_exists(constraints: POIQueryRequest):
             exists=exists,
             matching_pois=sanitize_for_json(matching_pois)
         )
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/memory")
+def replace_memory(request: ReplaceMemoryRequest):
+    try:
+        result = replace_kv_memory(
+            request.user_id,
+            [row.model_dump() for row in request.rows],
+            llm_model=os.getenv("LLM_MODEL") or os.getenv("AZURE_OPENAI_DEPLOYMENT", ""),
+        )
+        return {"success": True, "rows": len(request.rows), "entries": len(result["executed"])}
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))

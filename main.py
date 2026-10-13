@@ -457,6 +457,9 @@ def apply_kv_entries_to_constraints(constraints: Dict[str, Any], kv_entries: Lis
             continue
         if field == "price_level":
             value = _normalize_price_preference(value)
+        elif field == "cuisine" and isinstance(value, str):
+            cuisines = [cuisine.strip() for cuisine in value.split(",") if cuisine.strip()]
+            value = cuisines if len(cuisines) > 1 else cuisines[0] if cuisines else value
         updated[field] = value
         print(f"[DEBUG] Filled '{field}' from KV memory: {value}")
 
@@ -474,7 +477,12 @@ def fill_missing_constraints_with_memory(query: str, history: str, constraints: 
     kv_memory = {"entries": [], "context": "", "episodic_memory": None, "tokens_input": 0, "tokens_output": 0}
     if USE_KV_STORE:
         try:
-            kv_memory = retrieve_from_kv_store(user_id, query, llm_model=llm_model)
+            kv_memory = retrieve_from_kv_store(
+                user_id,
+                query,
+                llm_model=llm_model,
+                include_episodic_memory=USE_MEMORY,
+            )
             print("[DEBUG] KV memory retrieved:", kv_memory)
             constraints = apply_kv_entries_to_constraints(constraints, kv_memory.get("entries", []))
         except Exception:
@@ -590,10 +598,15 @@ def apply_structured_filters(df, intent, user_location,
     df_filtered = df.copy()
 
     def filter_contains_in_fields(df_filtered, key_word, field_names):
-        search_lower = key_word.lower()
+        search_terms = key_word if isinstance(key_word, (list, tuple, set)) else [key_word]
         mask = pd.Series(False, index=df_filtered.index)
-        for field in field_names:
-            mask |= df_filtered[field].fillna("").str.lower().str.contains(search_lower, na=False)
+        for search_term in search_terms:
+            search_lower = str(search_term).lower()
+            for field in field_names:
+                mask |= df_filtered[field].fillna("").str.lower().str.contains(
+                    search_lower,
+                    na=False,
+                )
         return df_filtered[mask]
 
     if len(df_filtered) > 0 and intent.get("category"):
@@ -605,8 +618,11 @@ def apply_structured_filters(df, intent, user_location,
             indices = torch.where(cos_scores >= similarity_threshold_category)[0].tolist()
             df_filtered = df_filtered.iloc[indices]
         else:
-            df_filtered = filter_contains_in_fields(df_filtered, intent["category"],
-                                                    field_names=["category", "name"])
+            df_filtered = filter_contains_in_fields(
+                df_filtered,
+                intent["category"],
+                field_names=["category", "name"],
+            )
         # print(df_filtered.head())
 
     if len(df_filtered) > 0 and intent.get("name"):
@@ -615,9 +631,11 @@ def apply_structured_filters(df, intent, user_location,
         print(df_filtered.head())
 
     if len(df_filtered) > 0 and intent.get("cuisine"):
-        pattern = re.escape(intent["cuisine"])
-        df_filtered = filter_contains_in_fields(df_filtered, pattern,
-                                                field_names=["category", "name"])
+        df_filtered = filter_contains_in_fields(
+            df_filtered,
+            intent["cuisine"],
+            field_names=["category", "name"],
+        )
         print(df_filtered.head())
 
     if len(df_filtered) > 0 and intent.get("price_level"):
