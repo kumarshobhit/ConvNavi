@@ -36,6 +36,7 @@ from prompts import (
 )
 from utils.file import load_jsonl_to_df
 from utils.format import clean_json, extract_json, extract_json_list, sanitize_for_json
+from memory.mempalace_store import MemPalaceNavigationMemory
 
 load_dotenv()
 
@@ -56,7 +57,6 @@ NAV_MEMORY_PATH = NAV_MEMORY_DIR / "navigation_memory.csv"
 NAV_MEMORY_EMBEDDINGS_PATH = NAV_MEMORY_DIR / "navigation_memory_embeddings.npy"
 NAV_MEMORY_FAISS_PATH = NAV_MEMORY_DIR / "navigation_memory.faiss"
 NAV_MEMORY_LOCK = threading.Lock()
-
 print(f"episodic memory config - USE_MEMORY: {USE_MEMORY}, BATCH_SIZE: {EPISODIC_MEMORY_BATCH_SIZE}, EMBEDDING_DEVICE: {EMBEDDING_DEVICE}")
 
 # Load embedding model once
@@ -110,6 +110,13 @@ Be concise unter 15 words.
 def embed_texts(texts):
     """Embed a list of texts and return tensors."""
     return model.encode(texts, convert_to_tensor=True)
+
+
+NAVIGATION_MEMORY = MemPalaceNavigationMemory(
+    NAV_MEMORY_DIR,
+    NAV_MEMORY_MAX_ENTRIES,
+    lambda texts: np.asarray(embed_texts(texts).cpu().numpy(), dtype=np.float32),
+)
 
 
 def preprocess_poi_json(row):
@@ -250,68 +257,22 @@ def generate_episodic_summary(history: str, llm_model: str = "") -> str:
 
 
 def append_navigation_memory_episode(summary: str, conversation_id: str, memory_path: Path = NAV_MEMORY_PATH):
-    """Store an episodic summary to navigation memory."""
+    """Store an episodic navigation memory in MemPalace."""
     if not USE_MEMORY or not summary:
         return
 
     with NAV_MEMORY_LOCK:
-        memory_df = load_navigation_memory(memory_path)
-        embeddings = load_navigation_memory_embeddings(memory_df, memory_path)
-
-        new_row = pd.DataFrame([
-            {
-                "time": datetime.utcnow().isoformat(timespec="seconds") + "Z",
-                "conversation_id": str(conversation_id),
-                "summary": summary,
-            }
-        ])
-
-        new_embedding = np.asarray(embed_texts([summary]).cpu().numpy(), dtype=np.float32)
-
-        memory_df = pd.concat([memory_df, new_row], ignore_index=True)
-        embeddings = np.concatenate([embeddings, new_embedding], axis=0) if len(embeddings) else new_embedding
-
-        if len(memory_df) > NAV_MEMORY_MAX_ENTRIES:
-            memory_df = memory_df.iloc[-NAV_MEMORY_MAX_ENTRIES:].reset_index(drop=True)
-            embeddings = embeddings[-NAV_MEMORY_MAX_ENTRIES:]
-
-        normalized_embeddings = embeddings.astype(np.float32, copy=True)
-        if len(normalized_embeddings) > 0:
-            faiss.normalize_L2(normalized_embeddings)
-        index = faiss.IndexFlatIP(normalized_embeddings.shape[1])
-        index.add(normalized_embeddings)
-
-        memory_path.parent.mkdir(parents=True, exist_ok=True)
-        memory_df.to_csv(memory_path, index=False)
-        np.save(NAV_MEMORY_EMBEDDINGS_PATH, embeddings)
-        faiss.write_index(index, str(NAV_MEMORY_FAISS_PATH))
-        
-        # print(f"[INFO] Episodic memory stored for conversation {conversation_id}: {summary[:50]}...")
+        NAVIGATION_MEMORY.append({
+            "time": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "conversation_id": str(conversation_id),
+            "summary": summary,
+        })
 
 
 def replace_navigation_memory(rows: List[Dict[str, Any]], memory_path: Path = NAV_MEMORY_PATH) -> int:
-    """Replace the whole episodic memory and rebuild its embeddings and FAISS index."""
-    memory_df = pd.DataFrame(rows, columns=["time", "conversation_id", "summary"]).fillna("")
-
+    """Replace the whole navigation memory with verbatim MemPalace documents."""
     with NAV_MEMORY_LOCK:
-        memory_path.parent.mkdir(parents=True, exist_ok=True)
-        memory_df.to_csv(memory_path, index=False)
-
-        if memory_df.empty:
-            NAV_MEMORY_EMBEDDINGS_PATH.unlink(missing_ok=True)
-            NAV_MEMORY_FAISS_PATH.unlink(missing_ok=True)
-            return 0
-
-        embeddings = np.asarray(
-            embed_texts(memory_df["summary"].astype(str).tolist()).cpu().numpy(), dtype=np.float32
-        )
-        normalized_embeddings = embeddings.copy()
-        faiss.normalize_L2(normalized_embeddings)
-        index = faiss.IndexFlatIP(normalized_embeddings.shape[1])
-        index.add(normalized_embeddings)
-        np.save(NAV_MEMORY_EMBEDDINGS_PATH, embeddings)
-        faiss.write_index(index, str(NAV_MEMORY_FAISS_PATH))
-    return len(memory_df)
+        return NAVIGATION_MEMORY.replace(rows)
 
 
 def append_navigation_memory_episode_async(summary: str, conversation_id: str, llm_model: str = ""):
@@ -392,10 +353,6 @@ def retrieve_navigation_memory(query: str, constraints: Dict[str, Any], missing_
     if not USE_MEMORY:
         return []
 
-    memory_df = load_navigation_memory(memory_path)
-    if memory_df.empty:
-        return []
-
     missing_fields = missing_fields or []
     missing_fields_text = ", ".join(missing_fields) if missing_fields else "none"
     search_text = (
@@ -403,31 +360,7 @@ def retrieve_navigation_memory(query: str, constraints: Dict[str, Any], missing_
         f"missing fields: {missing_fields_text}"
     )
     print("search_text:", search_text)
-    search_embedding = np.asarray(embed_texts([search_text]).cpu().numpy(), dtype=np.float32)
-    faiss.normalize_L2(search_embedding)
-
-    index = load_navigation_memory_index(memory_df, memory_path)
-    if index is None:
-        return []
-
-    top_n = min(top_k, len(memory_df))
-    if top_n <= 0:
-        return []
-
-    scores, top_indices = index.search(search_embedding, top_n)
-    retrieved = []
-    for score, idx in zip(scores[0].tolist(), top_indices[0].tolist()):
-        if idx < 0 or idx >= len(memory_df):
-            continue
-        row = memory_df.iloc[int(idx)]
-        retrieved.append({
-            "conversation_id": row.get("conversation_id", ""),
-            "time": row.get("time", ""),
-            "summary": row.get("summary", ""),
-            "score": float(score),
-        })
-
-    return retrieved
+    return [result.__dict__ for result in NAVIGATION_MEMORY.search(search_text, top_k)]
 
 
 def fill_missing_constraints_with_memory(query: str, history: str, constraints: Dict[str, Any], context: Context,
