@@ -998,7 +998,7 @@ def run_rag_navigation(
     embeddings,
     df,
     use_nlu=True,
-    llm_model=os.environ["LLM_MODEL"],
+    llm_model=None,
     user_id=1,
     user_location_name: str = "Philadelphia, PA",
 ):

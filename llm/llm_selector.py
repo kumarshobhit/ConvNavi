@@ -36,7 +36,12 @@ def pass_llm(prompt,
     when a failure occurs.
     """
     global TOTAL_TOKENS, TOTAL_TOKENS_IN, TOTAL_TOKENS_OUT, TOTAL_COSTS, QUERY_COSTS
-    model = model or os.getenv("LLM_MODEL") or os.getenv("AZURE_OPENAI_DEPLOYMENT")
+    model = (
+        model
+        or os.getenv("LLM_MODEL")
+        or os.getenv("LITELLM_MODEL")
+        or os.getenv("AZURE_OPENAI_DEPLOYMENT")
+    )
 
     try:
         if model in ("llama3","llama3.2", "mistral", "deepseek-v2",
@@ -76,6 +81,16 @@ def pass_llm(prompt,
                   system_message=None,
                   context=None,
                   deployment_name=model)
+        elif model == os.getenv("LITELLM_MODEL"):
+            from llm.call_litellm import call_litellm
+
+            response, input_tokens, output_tokens = call_litellm(
+                prompt=prompt,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                system_prompt=system_prompt,
+                model=model,
+            )
         elif model in ("gemini-3-flash-preview", "gemini-3-pro-preview",
                        "gemini-2.5-pro", "gemini-2.5-flash"):
             from llm.call_gemini import call_gemini
