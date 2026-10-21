@@ -36,6 +36,7 @@ from prompts import (
 )
 from utils.file import load_jsonl_to_df
 from utils.format import clean_json, extract_json, extract_json_list, sanitize_for_json
+from utils.categories import category_search_terms
 
 load_dotenv()
 
@@ -533,11 +534,17 @@ def apply_structured_filters(df, intent, user_location,
     print("intent: ", intent)
     df_filtered = df.copy()
 
-    def filter_contains_in_fields(df_filtered, key_word, field_names):
-        search_lower = key_word.lower()
+    def filter_contains_in_fields(df_filtered, search_terms, field_names):
+        if isinstance(search_terms, str):
+            search_terms = (search_terms,)
         mask = pd.Series(False, index=df_filtered.index)
-        for field in field_names:
-            mask |= df_filtered[field].fillna("").str.lower().str.contains(search_lower, na=False)
+        for search_term in search_terms:
+            for field in field_names:
+                mask |= df_filtered[field].fillna("").str.lower().str.contains(
+                    search_term.lower(),
+                    regex=False,
+                    na=False,
+                )
         return df_filtered[mask]
 
     if len(df_filtered) > 0 and intent.get("category"):
@@ -549,8 +556,11 @@ def apply_structured_filters(df, intent, user_location,
             indices = torch.where(cos_scores >= similarity_threshold_category)[0].tolist()
             df_filtered = df_filtered.iloc[indices]
         else:
-            df_filtered = filter_contains_in_fields(df_filtered, intent["category"],
-                                                    field_names=["category", "name"])
+            df_filtered = filter_contains_in_fields(
+                df_filtered,
+                category_search_terms(intent["category"]),
+                field_names=["category", "name"],
+            )
         # print(df_filtered.head())
 
     if len(df_filtered) > 0 and intent.get("name"):
