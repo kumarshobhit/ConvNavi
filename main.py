@@ -72,6 +72,8 @@ POI_CONSTRAINT_FIELDS = [
     "open_now",
     "rating",
     "parking",
+    "dogs_allowed",
+    "wheelchair_accessible",
     "has_outdoor_seating",
     "noise_level",
     "good_for_kids",
@@ -87,6 +89,8 @@ POI_OUTPUT_COLUMNS = [
     "noise_level",
     "good_for_kids",
     "parking",
+    "dogs_allowed",
+    "wheelchair_accessible",
 ]
 
 PROMPT_POI_INFO = """You are a helpful car navigation assistant. The user is asking a question about a place.
@@ -192,6 +196,16 @@ def _with_derived_poi_columns(df):
     if "good_for_kids" not in df.columns:
         df["good_for_kids"] = df["attributes"].apply(
             lambda attributes: _extract_attribute(attributes, "GoodForKids", "bool")
+        )
+
+    if "dogs_allowed" not in df.columns:
+        df["dogs_allowed"] = df["attributes"].apply(
+            lambda attributes: _extract_attribute(attributes, "DogsAllowed", "bool")
+        )
+
+    if "wheelchair_accessible" not in df.columns:
+        df["wheelchair_accessible"] = df["attributes"].apply(
+            lambda attributes: _extract_attribute(attributes, "WheelchairAccessible", "bool")
         )
 
     if "parking" not in df.columns:
@@ -602,6 +616,14 @@ def apply_structured_filters(df, intent, user_location,
                 df_filtered['good_for_kids'].apply(_normalize_bool_like) == expected_value
             ]
         print(df_filtered.head())
+
+    for field in ("dogs_allowed", "wheelchair_accessible"):
+        if len(df_filtered) > 0 and intent.get(field) is not None and field in df_filtered.columns:
+            expected_value = _normalize_bool_like(intent[field])
+            if expected_value is not None:
+                df_filtered = df_filtered[
+                    df_filtered[field].apply(_normalize_bool_like) == expected_value
+                ]
 
     if len(df_filtered) > 0 and intent.get("radius_km") is not None:
         print("user_location:", user_location)
@@ -1160,6 +1182,12 @@ def load_dataset(path_dataset, nrows, filter_city):
     )
     df_filtered['good_for_kids'] = df_filtered['attributes'].apply(
         lambda attributes: _extract_attribute(attributes, "GoodForKids", "bool")
+    )
+    df_filtered['dogs_allowed'] = df_filtered['attributes'].apply(
+        lambda attributes: _extract_attribute(attributes, "DogsAllowed", "bool")
+    )
+    df_filtered['wheelchair_accessible'] = df_filtered['attributes'].apply(
+        lambda attributes: _extract_attribute(attributes, "WheelchairAccessible", "bool")
     )
     df_filtered['text'] = df_filtered.apply(preprocess_poi_json, axis=1)
 
