@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import threading
 from datetime import datetime
@@ -15,7 +16,10 @@ from utils.format import extract_json_list
 
 
 KV_COLUMNS = ["user_id", "key", "value", "condition", "timestamp", "session_id"]
-DATA_DIR = Path(__file__).resolve().parents[1] / "data"
+DATA_DIR = Path(
+    os.environ.get("NAV_MEMORY_DIR")
+    or Path(__file__).resolve().parents[1] / "data"
+).resolve()
 KV_MEMORY_PATH = DATA_DIR / "kv_memory.csv"
 EPISODIC_MEMORY_PATH = DATA_DIR / "navigation_memory.csv"
 KV_MEMORY_LOCK = threading.Lock()
